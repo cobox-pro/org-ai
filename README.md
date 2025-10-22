@@ -1,5 +1,6 @@
 # org-ai [![MELPA](https://melpa.org/packages/org-ai-badge.svg)](https://melpa.org/#/org-ai)
 
+
 [![org-ai video](doc/org-ai-youtube-thumb-github.png)](https://www.youtube.com/watch?v=fvBDxiFPG6I)
 
 Minor mode for Emacs org-mode that provides access to generative AI models. Currently supported are
