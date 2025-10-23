@@ -1,2 +1,4 @@
 .DS_Store
 *.elc
+dev_docs/
+.cursorrules

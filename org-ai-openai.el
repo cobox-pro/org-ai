@@ -310,6 +310,18 @@ only contain fragments.")
 (defvar org-ai--currently-reasoning nil)
 (make-variable-buffer-local 'org-ai--currently-reasoning)
 
+(defvar org-ai--result-mode nil
+  "Stores the :result parameter value (e.g., 'output') for the current request.")
+(make-variable-buffer-local 'org-ai--result-mode)
+
+(defvar org-ai--accumulated-response nil
+  "Accumulates the full response text when :result output is specified.")
+(make-variable-buffer-local 'org-ai--accumulated-response)
+
+(defvar org-ai--result-context nil
+  "Stores the org-ai block context for writing results.")
+(make-variable-buffer-local 'org-ai--result-context)
+
 (defvar org-ai--url-buffer-last-position-marker nil
   "Local buffer var to store last read position.")
 ;; (make-variable-buffer-local 'org-ai--url-buffer-last-position-marker)
@@ -357,6 +369,11 @@ is the ai cloud service such as 'openai or 'azure-openai."
         (frequency-penalty)
         (presence-penalty)
         (service))
+       ;; Initialize result mode variables
+       (with-current-buffer buffer
+         (setq org-ai--result-mode (alist-get :result info))
+         (setq org-ai--accumulated-response nil)
+         (setq org-ai--result-context context))
        (let ((callback (cond
                         (messages (lambda (result) (org-ai--insert-stream-response context buffer result t)))
                         (t (lambda (result) (org-ai--insert-single-response context buffer result))))))
@@ -370,6 +387,57 @@ is the ai cloud service such as 'openai or 'azure-openai."
                                 :presence-penalty presence-penalty
                                 :service service
                                 :callback callback))))))
+
+(defun org-ai--result-output-mode-p ()
+  "Check if current request is in :result output or :result ai mode."
+  (and org-ai--result-mode 
+       (or (string= org-ai--result-mode "output")
+           (string= org-ai--result-mode "ai"))))
+
+(defun org-ai--delete-old-results ()
+  "Delete existing #+RESULTS: block if present."
+  (when (save-excursion
+          (forward-line 1)
+          (looking-at "^#\\+RESULTS:"))
+    (forward-line 1)
+    (let ((start (point)))
+      (forward-line 1)
+      (cond
+       ((looking-at "^#\\+BEGIN_EXAMPLE")
+        (when (search-forward "#+END_EXAMPLE" nil t)
+          (delete-region start (point))))
+       ((looking-at "^#\\+begin_ai  :noweb yes :service deepseek :model deepseek-chat :result ai")
+        (when (search-forward "#+end_ai" nil t)
+          (delete-region start (point))))))))
+
+(defun org-ai--insert-results-text (text result-type)
+  "Insert TEXT into a #+RESULTS: block.
+RESULT-TYPE can be 'output' (EXAMPLE block) or 'ai' (ai block)."
+  (insert "\n#+RESULTS:\n")
+  (if (string= result-type "ai")
+      (progn
+        (insert "#+begin_ai  :noweb yes :service deepseek :model deepseek-chat :result ai\n")
+        (insert text)
+        (unless (string-suffix-p "\n" text)
+          (insert "\n"))
+        (insert "#+end_ai"))
+    (progn
+      (insert "#+BEGIN_EXAMPLE\n")
+      (insert text)
+      (unless (string-suffix-p "\n" text)
+        (insert "\n"))
+      (insert "#+END_EXAMPLE"))))
+
+(defun org-ai--write-results-block (context buffer text)
+  "Write the accumulated response TEXT to a #+RESULTS: block.
+`CONTEXT' is the org-ai block context. `BUFFER' is the buffer to write to."
+  (with-current-buffer buffer
+    (save-excursion
+      (goto-char (org-element-property :end context))
+      (goto-char (line-beginning-position))
+      (end-of-line)
+      (org-ai--delete-old-results)
+      (org-ai--insert-results-text text org-ai--result-mode))))
 
 (defun org-ai--insert-single-response (context buffer &optional response)
   "Insert the response from the OpenAI API into the buffer.
@@ -563,40 +631,46 @@ the response into."
                                      (setq org-ai--current-insert-position-marker (point-marker)))))))
 
                        (text (let ((text (org-ai--response-payload response)))
-                               (save-excursion
-                                 (goto-char pos)
-                                 (when (or org-ai--chat-got-first-response (not (string= (string-trim text) "")))
-                                   (when (and (not org-ai--chat-got-first-response) (string-prefix-p "```" text))
-                                     ;; start markdown codeblock responses on their own line
-                                     (insert "\n"))
-                                   ;; track if we are inside code markers
-                                   (setq org-ai--currently-inside-code-markers (and (not org-ai--currently-inside-code-markers)
-                                                                                    (string-match-p "```" text)))
-                                   (insert (decode-coding-string text 'utf-8))
-                                   ;; "auto-fill"
-                                   (when (and org-ai-auto-fill (not org-ai--currently-inside-code-markers))
-                                     (fill-paragraph))
-                                   ;; hook
-                                   (run-hook-with-args 'org-ai-after-chat-insertion-hook 'text text))
-                                 (setq org-ai--chat-got-first-response t)
-                                 (setq org-ai--current-insert-position-marker (point-marker)))))
+                              ;; Accumulate text if :result output is specified
+                              (when (org-ai--result-output-mode-p)
+                                (setq org-ai--accumulated-response 
+                                      (concat (or org-ai--accumulated-response "") 
+                                              (decode-coding-string text 'utf-8))))
+                              
+                              (save-excursion
+                                (goto-char pos)
+                                (when (or org-ai--chat-got-first-response (not (string= (string-trim text) "")))
+                                  (when (and (not org-ai--chat-got-first-response) (string-prefix-p "```" text))
+                                    (insert "\n"))
+                                  (setq org-ai--currently-inside-code-markers 
+                                        (and (not org-ai--currently-inside-code-markers)
+                                             (string-match-p "```" text)))
+                                  ;; Only insert inline if NOT in result output mode
+                                  (unless (org-ai--result-output-mode-p)
+                                    (insert (decode-coding-string text 'utf-8))
+                                    (when (and org-ai-auto-fill (not org-ai--currently-inside-code-markers))
+                                      (fill-paragraph)))
+                                  (run-hook-with-args 'org-ai-after-chat-insertion-hook 'text text))
+                                (setq org-ai--chat-got-first-response t)
+                                (setq org-ai--current-insert-position-marker (point-marker)))))
 
                        (stop (progn
-                               (save-excursion
-                                 (when org-ai--current-insert-position-marker
-                                   (goto-char org-ai--current-insert-position-marker))
-
-                                 ;; (message "inserting user prompt: %" (string= org-ai--current-chat-role "user"))
-                                 (let ((text (if insert-role
-                                                 (let ((text "\n\n[ME]: "))
-                                                   (insert text)
-                                                   text)
-                                               "")))
-                                   (run-hook-with-args 'org-ai-after-chat-insertion-hook 'end text)
-                                   (setq org-ai--current-insert-position-marker (point-marker))))
-
-                               (org-element-cache-reset)
-                               (when org-ai-jump-to-end-of-block (goto-char org-ai--current-insert-position-marker)))))))))
+                              (save-excursion
+                                (when org-ai--current-insert-position-marker
+                                  (goto-char org-ai--current-insert-position-marker))
+                                (let ((text (if (and insert-role (not (org-ai--result-output-mode-p)))
+                                               (progn (insert "\n\n[ME]: ") "\n\n[ME]: ")
+                                             "")))
+                                  (run-hook-with-args 'org-ai-after-chat-insertion-hook 'end text)
+                                  (setq org-ai--current-insert-position-marker (point-marker))))
+                              (when (and (org-ai--result-output-mode-p)
+                                        org-ai--accumulated-response
+                                        org-ai--result-context)
+                                (org-ai--write-results-block org-ai--result-context buffer org-ai--accumulated-response)
+                                (setq org-ai--accumulated-response nil))
+                              (org-element-cache-reset)
+                              (when org-ai-jump-to-end-of-block 
+                                (goto-char org-ai--current-insert-position-marker)))))))))
    normalized))
 
 (cl-defun org-ai-stream-request (&optional &key prompt messages model max-tokens temperature top-p frequency-penalty presence-penalty service callback)

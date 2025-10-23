@@ -125,6 +125,32 @@ Is Emacs the greatest editor?
 
 and press `C-c C-c`. The Chat input will appear inline and once the response is complete, you can enter your reply and so on. See [the demo](#chatgpt-in-org-mode) below. You can press `C-g` while the ai request is running to cancel it.
 
+You can use `:result output` or `:result ai` to have the AI response appear in a `#+RESULTS:` block (similar to org-babel code execution):
+
+```org
+#+begin_ai :result output
+What is Emacs?
+#+end_ai
+
+#+RESULTS:
+#+BEGIN_EXAMPLE
+Emacs is a powerful, extensible text editor...
+#+END_EXAMPLE
+```
+
+Or use `:result ai` to wrap the response in an ai block:
+
+```org
+#+begin_ai :result ai
+What is Emacs?
+#+end_ai
+
+#+RESULTS:
+#+begin_ai
+Emacs is a powerful, extensible text editor...
+#+end_ai
+```
+
 You can also modify the _system_ prompt and other parameters used. The system prompt is injected before the user's input and "primes" the model to answer in a certain style. For example you can do:
 
 ```org
@@ -195,6 +221,8 @@ By default, the content of ai blocks are interpreted as messages for ChatGPT. Te
 - `:frequency-penalty number` - frequency penalty of the model (default: 0)
 - `:presence-penalty` - presence penalty of the model (default: 0)
 - `:sys-everywhere` - repeat the system prompt for every user message (default: nil)
+- `:result output` - output the AI response in a `#+RESULTS:` block (similar to org-babel code blocks) instead of inline. The response will be wrapped in `#+BEGIN_EXAMPLE...#+END_EXAMPLE` blocks.
+- `:result ai` - similar to `:result output`, but the response will be wrapped in `#+begin_ai...#+end_ai` blocks instead of EXAMPLE blocks.
 
 If you have a lot of different threads of conversation regarding the same topic and settings (system prompt, temperature, etc) and you don't want to repeat all the options, you can set org file scope properties or create a org heading with property drawer, such that all `#+begin_ai...#+end_ai` blocks under that heading will inherit the settings.
 
